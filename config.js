@@ -18,7 +18,7 @@ const config = {
 };
 
 
-config.web.port = process.env.WEB_PORT || 9000;
+config.web.port = process.env.WEB_PORT || 8080;
 
 
 module.exports = config;
