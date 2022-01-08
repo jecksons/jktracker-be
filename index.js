@@ -2,14 +2,18 @@ const express = require('express'),
     mysql = require('mysql'),
     util = require('util'),
     cors = require('cors'),
-    config = require('./config'),
-    Promise = require('promise');
+    Promise = require('promise'),
+    dotenv = require('dotenv');
 const Task = require('./models/task');
 
 let app = express();
 
 app.use(express.json());
 app.use(cors());
+
+dotenv.config();
+
+const config = require('./config')
 
 
 function getConnection(){
