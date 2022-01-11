@@ -130,6 +130,19 @@ const SQL_SEL_TRACKED_TIME =  `
       left join task tsk on (tot.id_task = tsk.id_task)
       left join task par on (par.id_task = tsk.id_task_parent)
    `;
+
+const SQL_SEL_ACTIVE_TASK = `
+      select
+         trk.id_task,
+         trk.start_time,
+         tsk.description
+      from
+         task_time_track trk,
+         task tsk
+      where
+         trk.end_time is null
+         and trk.id_task = tsk.id_task
+   `;
    
 
 class Task {
@@ -366,7 +379,20 @@ class Task {
                values.push(query.status);
             }
          }
-         return await Task.getByFilterNT(filters, values, conn);         
+         const tasks = await Task.getByFilterNT(filters, values, conn);         
+         const rows = await conn.query(SQL_SEL_ACTIVE_TASK, []);
+         let ret = {
+            results: tasks,
+            activeTask: null 
+         };         
+         if (rows.length > 0) {
+            ret.activeTask = {
+               id: rows[0].id_task,
+               start_time: rows[0].start_time,
+               description: rows[0].description
+            };
+         }
+         return ret;         
       }
       finally {
          await conn.close();
