@@ -139,7 +139,8 @@ const SQL_SEL_ACTIVE_TASK = `
       select
          trk.id_task,
          trk.start_time,
-         tsk.description
+         tsk.description,
+         trk.id_task_time_track
       from
          task_time_track trk,
          task tsk
@@ -183,18 +184,23 @@ class TaskController {
       throw new ErUnprocEntity('The server was unable to retrieve the tracking time.');
    }
 
-   static async stopAllTrackingTimesNT(conn) {
-      await conn.query(`
-         update 
-            task_time_track
-         set
-            end_time = sysdate()
-         where
-            end_time is null            
-      `, []);
+   static async stopAllTrackingTimesNT(idUser, conn) {
+      const rows = await conn.query(SQL_SEL_ACTIVE_TASK, [idUser]);
+      if (rows.length > 0) {
+         for (let i =0; i < rows.length; i++) {
+            await conn.query(`
+                  update 
+                     task_time_track
+                  set
+                     end_time = sysdate()
+                  where
+                     id_task_time_track = ?
+               `, [rows[i].id_task_time_track]);
+         }
+      }      
    }
 
-   static async startStopTrack(idTask, action, conn) {
+   static async startStopTrack(idUser, idTask, action, conn) {
       let transStarted = false;
       try {
          if (!action) {
@@ -208,8 +214,11 @@ class TaskController {
                throw new ErBadRequest('For start action, its needed to provide the task number!');
             }
          }
+         if (!(idUser > 0)) {
+            throw new ErBadRequest('IdUser must be provided!');
+         }
          await conn.beginTransaction();
-         await TaskController.stopAllTrackingTimesNT(conn);
+         await TaskController.stopAllTrackingTimesNT(idUser, conn);
          let ret = {};
          if (action === 'S') {
             ret = await TaskController.startTrackingNT(idTask, conn);            
@@ -439,7 +448,7 @@ class TaskController {
    }
    
    static startStopTrackReq(req, res, conn) {
-      TaskController.startStopTrack(req.body.id_task, req.body.action, conn)
+      TaskController.startStopTrack(req.id_user, req.body.id_task, req.body.action, conn)
       .then((ret) => res.status(200).json(ret))
       .catch((err) => UtilsLib.resError(err, res));
    }
