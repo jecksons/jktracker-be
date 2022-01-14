@@ -36,6 +36,16 @@ const SQL_DEL_TOKEN = `
       token = ?   
    `;
 
+const verifyClientVersion = (req, res, next) => {
+   let clientVersion =  parseInt(req.headers['x-client-version']);
+   if (clientVersion > 0) {
+      if (clientVersion < config.web.clientVersion) {
+         return res.status(HttpStatusCode.UPGRADE_REQUIRED).json({message: `Upgrade to client ${config.web.clientVersion}`});
+      }      
+   } 
+   next();
+}
+
 const verifyToken = (req, res, next) => {
    let token = req.headers['x-access-token'];
    if (!token) {
@@ -49,7 +59,7 @@ const verifyToken = (req, res, next) => {
          return res.status(HttpStatusCode.UNAUTHORIZED).json({message: 'Unauthorized!'});
       }
       req.id_user = decoded.id_user;
-      next();
+      verifyClientVersion(req, res, next);
    } );
 }
 
@@ -179,6 +189,7 @@ const signInEmail = async (req, res, conn) => {
 
 module.exports = {
    verifyToken: verifyToken,
+   verifyClientVersion: verifyClientVersion,
    signIn: signIn,
    signInDemo: signInDemo,
    signInEmail: signInEmail,
