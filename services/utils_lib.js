@@ -26,6 +26,7 @@ const SQL_INSERT_UNIQUE_CODE =  `
 
 class UtilsLib{
 
+
     static roundTo(num, decimals) {
         let decimalPow = 2;
         if (!(decimals >= 0)) {
@@ -101,8 +102,13 @@ class UtilsLib{
     }
 
     static addDays(baseDate, days) {
-      return new Date(baseDate.getTime() + (86400000 * days));
-  }
+        return new Date(baseDate.getTime() + (86400000 * days));
+    }
+
+    static validateEmail(email) {        
+        const emailExp = /\S+@\S+\.\S+/;
+        return emailExp.test(email);          
+    }
 
 }
 

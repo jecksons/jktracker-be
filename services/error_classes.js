@@ -1,7 +1,9 @@
 const  HttpStatusCode  = {
    OK:  200,
    BAD_REQUEST: 400,
+   UNAUTHORIZED: 401,
    NOT_FOUND: 404,
+   FORBIDDEN: 403,
    UNPROCESSABLE_ENTITY: 422,
    INTERNAL_SERVER: 500,   
 }
@@ -15,11 +17,25 @@ class BaseError extends Error {
 }
 
 
+class ErForbidden extends BaseError {
+   constructor(message) {
+       super(message, HttpStatusCode.FORBIDDEN);
+   }
+}
+
+class ErUnauthorized extends BaseError {
+   constructor(message) {
+       super(message, HttpStatusCode.UNAUTHORIZED);
+   }
+}
+
 class ErNotFound extends BaseError {
    constructor(message) {
        super(message, HttpStatusCode.NOT_FOUND);
    }
 }
+
+
 
 class ErUnprocEntity extends BaseError {
    constructor(message) {
@@ -40,5 +56,5 @@ class ErInternalServer extends BaseError {
 }
 
 module.exports = {
-   HttpStatusCode, BaseError, ErNotFound, ErUnprocEntity, ErBadRequest, ErInternalServer
+   HttpStatusCode, BaseError, ErNotFound, ErUnprocEntity, ErBadRequest, ErInternalServer, ErForbidden, ErUnauthorized
 };
