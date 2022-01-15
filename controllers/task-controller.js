@@ -364,10 +364,10 @@ class TaskController {
             values.push(query.id_parent);
          } else {
             filters = ' id_task_parent is null ';
-            if (query.status) {
-               filters += ' and tsk.id_task_status = ?';
-               values.push(query.status);
-            }
+         }
+         if (query.status) {
+            filters += ' and tsk.id_task_status = ?';
+            values.push(query.status);
          }
          const tasks = await TaskController.getByFilterNT(userId, filters, values, conn);         
          const rows = await conn.query(SQL_SEL_ACTIVE_TASK, [userId]);
