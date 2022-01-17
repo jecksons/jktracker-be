@@ -83,6 +83,7 @@ const SQL_SEL_TASK = `
          1 = 1
          /*filter*/
       order by    
+         /*sort_order*/
          ifnull(tsk.priority, 9999),
          tsk.id_task
    `;
@@ -154,7 +155,7 @@ const SQL_SEL_ACTIVE_TASK = `
 class TaskController {
 
 
-   static async startTrackingNT(idTask, conn) {
+   static async startTrackingNT(idUser, idTask, conn) {
       const sqlIns = `
          insert into task_time_track
          (
@@ -176,14 +177,9 @@ class TaskController {
             id_task_time_track = ?      
       `;
       const updRows = await conn.query(sqlIns, [idTask]);
-      const insId = updRows.insertId;
-      const rows = await conn.query(sqlRet, [insId]);
-      if (rows.length > 0) {
-         return {id_task: idTask, start_time: rows[0].start_time};
-      }
-      throw new ErUnprocEntity('The server was unable to retrieve the tracking time.');
+      return await TaskController.getActiveTask(idUser, conn);
    }
-
+   
    static async stopAllTrackingTimesNT(idUser, conn) {
       const rows = await conn.query(SQL_SEL_ACTIVE_TASK, [idUser]);
       if (rows.length > 0) {
@@ -198,6 +194,17 @@ class TaskController {
                `, [rows[i].id_task_time_track]);
          }
       }      
+   }
+
+   static async stopTrackingTimeNT(idTaskTimeTrack, conn) {
+      await conn.query(`
+         update 
+            task_time_track
+         set
+            end_time = sysdate()
+         where
+            id_task_time_track = ?
+      `, [idTaskTimeTrack]);
    }
 
    static async startStopTrack(idUser, idTask, action, conn) {
@@ -218,13 +225,41 @@ class TaskController {
             throw new ErBadRequest('IdUser must be provided!');
          }
          await conn.beginTransaction();
-         await TaskController.stopAllTrackingTimesNT(idUser, conn);
-         let ret = {};
-         if (action === 'S') {
-            ret = await TaskController.startTrackingNT(idTask, conn);            
-         } else {
-            ret = {message: 'Stopped with success!'};
+         const previousTask = await TaskController.getActiveTask(idUser, conn);
+         if (previousTask) {
+            await TaskController.stopTrackingTimeNT(previousTask.id_task_time_track, conn);
          }         
+         let ret = {
+            previousTask: null
+         };
+         if (previousTask) {
+            const tskItems = await  TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [previousTask.id], conn);
+            if (tskItems.length > 0) {
+               ret.previousTask = tskItems[0];
+            }
+         }               
+         if (action === 'S') {
+            await TaskController.startTrackingNT(idUser, idTask, conn);
+            const tskActive = await  TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [idTask], conn);
+            if (tskActive.length > 0) {
+               ret.currentTask =  tskActive[0];           
+            }            
+            ret.serverDate = new Date();
+         } else {
+            ret.message = 'Stopped with success!';
+         }         
+         if (ret.currentTask?.id_task_parent > 0) {
+            const tskParent = await  TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [ret.currentTask?.id_task_parent], conn);
+            if (tskParent.length > 0) {
+               ret.currentTask.parent_data = tskParent[0];
+            }            
+         }
+         if (ret.previousTask?.id_task_parent > 0) {
+            const tskParent = await TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [ret.previousTask?.id_task_parent], conn);
+            if (tskParent.length > 0) {
+               ret.previousTask.parent_data = tskParent[0];
+            }            
+         }
          await conn.commit();
          return ret;
       } 
@@ -296,11 +331,14 @@ class TaskController {
       return {sql: sql, values: values};
    }
 
-   static async getByFilterNT(userId, filter, values, conn) {
+   static async getByFilterNT(idUser, filter, values, conn, sortOrder) {
       let sql = ' and tsk.id_user = ? ';
       sql += 'and ' + filter;
-      let valuesSql = [userId, ...values];
+      let valuesSql = [idUser, ...values];      
       sql = SQL_SEL_TASK.replace('/*filter*/',  sql);
+      if (sortOrder) {
+         sql = sql.replace('/*sort_order*/', sortOrder);
+      }
       const rows = await conn.query(sql, valuesSql);
       if (rows.length > 0) {
          return rows.map((itm) => ({
@@ -352,13 +390,26 @@ class TaskController {
       finally {
          await conn.close();
       }
-
    }
 
-   static async getAll(userId, query, conn) {
+   static async getActiveTask(idUser, conn) {
+      const rows = await conn.query(SQL_SEL_ACTIVE_TASK, [idUser]);
+      if (rows.length > 0) {
+         return {
+            id: rows[0].id_task,
+            start_time_tracking: rows[0].start_time,
+            description: rows[0].description,
+            id_task_time_track: rows[0].id_task_time_track,
+            server_date: new Date()
+         };
+      }
+   }
+
+   static async getAll(idUser, query, conn) {
       try {
          let filters = '';
          let values = [];
+         let sortOrder;
          if (query.id_parent > 0) {
             filters = ' id_task_parent = ? ';
             values.push(query.id_parent);
@@ -367,21 +418,22 @@ class TaskController {
          }
          if (query.status) {
             filters += ' and tsk.id_task_status = ?';
-            values.push(query.status);
+            values.push(query.status);            
+         } else {
+            sortOrder = `
+               case
+                  when tsk.id_task_status = 'O' then 1
+                  when tsk.id_task_status = 'F' then 2
+               else
+                  3
+               end,
+            `;
          }
-         const tasks = await TaskController.getByFilterNT(userId, filters, values, conn);         
-         const rows = await conn.query(SQL_SEL_ACTIVE_TASK, [userId]);
+         const tasks = await TaskController.getByFilterNT(idUser, filters, values, conn, sortOrder);                  
          let ret = {
-            results: tasks,
-            activeTask: null 
+            results: tasks 
          };         
-         if (rows.length > 0) {
-            ret.activeTask = {
-               id: rows[0].id_task,
-               start_time: rows[0].start_time,
-               description: rows[0].description
-            };
-         }
+         ret.activeTask = await TaskController.getActiveTask(idUser, conn);         
          return ret;         
       }
       finally {
@@ -389,7 +441,7 @@ class TaskController {
       }
    }
 
-   static async getTrackedTime(userId, query, conn) {
+   static async getTrackedTime(idUser, query, conn) {
       try {
          if (!query.weekFrom) {
             throw new ErBadRequest('weekFrom is not informed!');
@@ -405,10 +457,10 @@ class TaskController {
          }         
          const dtTo = UtilsLib.addDays(dtFrom, 6);
          const rows = await conn.query(SQL_SEL_TRACKED_TIME, [
-            userId,
+            idUser,
             dtFrom,
             dtTo,
-            userId,
+            idUser,
             dtFrom,
             dtTo
          ]);
