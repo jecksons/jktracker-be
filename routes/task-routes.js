@@ -11,8 +11,14 @@ module.exports = (app, handleRequestDB) => {
     });
 
    app.get('/tasks/', [authController.verifyToken], (req, res) => handleRequestDB(req, res, TaskController.getAllReq));
+   app.get('/tasks/code/:id', [authController.verifyToken],  (req, res) => handleRequestDB(req, res, TaskController.getTaskByCodeReq ));
+   app.get('/tasks/id/:id', [authController.verifyToken],  (req, res) => handleRequestDB(req, res, TaskController.getTaskByIdReq ));
+   app.delete('/tasks/id/:id', [authController.verifyToken],  (req, res) => handleRequestDB(req, res, TaskController.deleteTaskReq ));
+   app.get('/tasks/tracked-time-task/:id', [authController.verifyToken],  (req, res) => handleRequestDB(req, res, TaskController.getTaskRecordedTimesReq ));   
    app.post('/tasks/', [authController.verifyToken], (req, res) => handleRequestDB(req, res, TaskController.saveTaskReq));
+   app.post('/tasks/time-record/', [authController.verifyToken], (req, res) => handleRequestDB(req, res, TaskController.saveTimeRecordReq));
+   app.delete('/tasks/time-record/:id', [authController.verifyToken], (req, res) => handleRequestDB(req, res, TaskController.deleteTaskRecordTimeReq));
    app.get('/tasks/tracked-time/', [authController.verifyToken], (req, res) => handleRequestDB(req, res, TaskController.getTrackedTimeReq ));
-   app.post('/tasks/track/', [authController.verifyToken],  (req, res) => handleRequestDB(req, res, TaskController.startStopTrackReq ));
+   app.post('/tasks/track/', [authController.verifyToken],  (req, res) => handleRequestDB(req, res, TaskController.startStopTrackReq ));   
 
 }

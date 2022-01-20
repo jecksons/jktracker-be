@@ -4,11 +4,9 @@ const {BaseError} = require('./error_classes');
 const SQL_INSERT_UNIQUE_CODE =  `
         insert into unique_code
         (
-            code_length,
             code_string
         )
         select
-            ?,
             ?
         where
             not exists
@@ -18,8 +16,7 @@ const SQL_INSERT_UNIQUE_CODE =  `
                         from
                             unique_code unc
                         where
-                            unc.code_length = ?
-                            and unc.code_string = ?
+                            unc.code_string = ?
                     )    
     `;
 
@@ -66,7 +63,7 @@ class UtilsLib{
             if (shouldUpper) {
                 strRes = strRes.toUpperCase();
             }
-            const rows = await conn.query(SQL_INSERT_UNIQUE_CODE, [length, strRes, length, strRes]);
+            const rows = await conn.query(SQL_INSERT_UNIQUE_CODE, [strRes, strRes]);
             if (rows.affectedRows === 1) {
                 return strRes;
             }

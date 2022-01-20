@@ -1,6 +1,7 @@
 const { ErBadRequest, ErNotFound, ErInternalServer, ErUnprocEntity } = require("../services/error_classes");
 const UtilsLib = require("../services/utils_lib");
 const Task = require('../models/task');
+const TimeRecord = require('../models/time-record');
 
 const SQL_INS_TASK = `
       insert into task
@@ -11,9 +12,11 @@ const SQL_INS_TASK = `
          due_date,
          priority,
          estimated_time,
-         id_user
+         id_user,
+         unique_code,
+         created_at
       )
-      values(?, ?, ?, ?, ?, ?, ?)
+      values(?, ?, ?, ?, ?, ?, ?, ?, sysdate())
    `;
 
 const SQL_SEL_TASK = `
@@ -25,6 +28,7 @@ const SQL_SEL_TASK = `
          tsk.due_date,
          tsk.priority,
          tsk.estimated_time,
+         tsk.unique_code,
          case
             when exists
                      (
@@ -151,6 +155,158 @@ const SQL_SEL_ACTIVE_TASK = `
          and tsk.id_user = ?
    `;
 
+const SQL_SEL_TASKS_BY_CODE = `
+      with
+         par as
+         (
+            select
+               chi.id_task
+            from
+               task chi
+            where
+               chi.unique_code = ?
+               and chi.id_task_parent is null
+               and chi.id_user = ?
+            union all 
+            select
+               chi.id_task_parent
+            from
+               task chi
+            where
+               chi.unique_code = ?
+               and chi.id_task_parent is not null
+               and chi.id_user = ?
+         ),
+         tsk as
+         (
+            select 
+               tsk.description,
+               tsk.id_task,
+               tsk.id_task_parent,
+               tsk.id_task_status,
+               tsk.estimated_time,
+               tsk.priority,
+               tsk.unique_code
+            from
+               task tsk   
+            join par on (par.id_task = tsk.id_task_parent)   
+            union all
+            select 
+               tsk.description,
+               tsk.id_task,
+               tsk.id_task_parent,
+               tsk.id_task_status,
+               tsk.estimated_time,
+               tsk.priority,
+               tsk.unique_code
+            from
+               task tsk   
+            join par on (par.id_task = tsk.id_task)      
+         ),
+         itm as
+         (
+            select
+               tsk.*,
+               round(
+               (
+                  select 
+                     sum(( unix_timestamp(ifnull(trk.end_time, sysdate())) -  unix_timestamp(trk.start_time)) / 60 / 60 / 24) total_time
+                  from 
+                     task_time_track trk
+                  where 
+                     trk.id_task = tsk.id_task
+               ), 8) tracked_time
+            from
+               tsk
+         )
+      select
+         itm.*,
+         sum(ifnull(itm.estimated_time, 0)) over() total_estimated,
+         sum(ifnull(itm.tracked_time, 0)) over() total_tracked
+      from
+         itm
+      order by
+         ifnull(itm.id_task_parent, -1),
+         case
+            when itm.id_task_status = 'O' then 1
+            when itm.id_task_status = 'F' then 2
+         else
+            3
+         end,
+         ifnull(itm.priority , 9999999)
+   `;   
+
+const SQL_SEL_RECORDED_TIMES = `
+      with
+         trk as
+         (
+            select 
+               trk.id_task_time_track,
+               trk.start_time,         
+               trk.end_time,
+               yearweek(trk.start_time) week,
+               (( unix_timestamp(ifnull(trk.end_time, sysdate())) -  unix_timestamp(trk.start_time)) / 60 / 60 / 24) recorded_time
+            from 
+               task_time_track trk
+            where
+               id_task = ?
+         )
+      select
+         trk.*,
+         sum(trk.recorded_time) over() total_time,
+         sum(trk.recorded_time) over(partition by trk.week) total_time_week,
+         row_number() over(partition by trk.week order by trk.start_time) rownumber_week,
+         count(1) over(partition by trk.week) rows_week
+      from
+         trk   
+   `;
+
+const SQL_DEL_TASK = `
+      delete from task
+      where 
+         id_task = ?
+   `;
+
+const SQL_INS_TIME_TRACK = `
+      insert into task_time_track
+      (
+         id_task, 
+         start_time,
+         end_time
+      )   
+      values
+      (
+         ?,
+         ?,
+         ?
+      )
+   `;
+
+const SQL_UPD_TIME_TRACK = `
+      update
+         task_time_track
+      set   
+         start_time = ?,
+         end_time = ?
+      where
+         id_task_time_track = ?
+   `;
+
+const SQL_SEL_CHECK_TIME_RECORD = `
+      select
+         1
+      from
+         task_time_track trk
+      join task tsk on (tsk.id_task = trk.id_task and tsk.id_user = ?)
+      where
+         trk.id_task_time_track = ?
+   `;
+
+const SQL_DEL_TIME_RECORD = `
+      delete from task_time_track trk
+      where
+         trk.id_task_time_track = ?
+   `;
 
 class TaskController {
 
@@ -274,9 +430,43 @@ class TaskController {
       }
    }
 
-   
+   static async getTaskById(idTask, idUser, conn) {
+      try {
+         return await TaskController.getByIdNT(idTask, idUser, conn);
+      } finally {
+         await conn.close();
+      }     
+   }
 
-   static getSaveOptions(task) {
+   static async getTaskByCode(idUser, taskCode, conn) {
+      try {
+         const rows = await conn.query(SQL_SEL_TASKS_BY_CODE, [taskCode, idUser, taskCode, idUser]);
+         if (rows.length > 0) {
+            const items = rows.map((itm) => ({
+               id: itm.id_task,
+               description: itm.description,
+               id_task_parent: itm.id_task_parent,
+               id_task_status: itm.id_task_status,
+               estimated_time: itm.estimated_time,
+               priority: itm.priority,
+               unique_code: itm.unique_code,
+               tracked_time: itm.tracked_time ?? 0
+            }));
+            return {
+               results: items,
+               total: {
+                  tracked: rows[0].total_tracked,
+                  estimated: rows[0].total_estimated
+               }
+            };
+         }
+         throw new ErNotFound('No task found!');
+      } finally {
+         await conn.close();
+      }
+   }
+
+   static async getSaveOptions(task, conn) {
       let values = [];
       let sql  = '';
       if (task.id > 0) {
@@ -317,6 +507,7 @@ class TaskController {
          if (!(task.id_user > 0)) {
             throw new ErBadRequest('idUser is required!');
          }
+         task.unique_code = await UtilsLib.getUniqueString(15, conn);
          sql = SQL_INS_TASK;
          values = [
             task.description,
@@ -325,10 +516,19 @@ class TaskController {
             task.due_date,
             task.priority,
             task.estimated_time,
-            task.id_user
+            task.id_user,
+            task.unique_code
          ];         
       }
       return {sql: sql, values: values};
+   }
+
+   static async getByIdNT(idTask, idUser, conn) {      
+      const itms = await TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [idTask], conn);
+      if (itms.length > 0) {
+         return itms[0];
+      }
+      throw new ErNotFound('No task found with this id.');
    }
 
    static async getByFilterNT(idUser, filter, values, conn, sortOrder) {
@@ -353,7 +553,8 @@ class TaskController {
             tracked_time: itm.tracked_time ?? 0,
             tracked_time_childs: itm.tracked_time_childs ?? 0,
             estimated_time_childs: itm.estimated_time_childs ?? 0,
-            start_time_tracking: itm.start_time_tracking
+            start_time_tracking: itm.start_time_tracking,
+            unique_code: itm.unique_code
          }));
       }
       return [];
@@ -362,7 +563,7 @@ class TaskController {
    static async saveTask(task, conn) {
       let transStarted = false;
       try {
-         const options = TaskController.getSaveOptions(task);
+         const options = await TaskController.getSaveOptions(task, conn);
          await conn.beginTransaction();
          transStarted = true;
          const rows = await conn.query(options.sql, options.values);
@@ -441,6 +642,7 @@ class TaskController {
       }
    }
 
+
    static async getTrackedTime(idUser, query, conn) {
       try {
          if (!query.weekFrom) {
@@ -498,6 +700,130 @@ class TaskController {
          await conn.close();
       }
    }
+
+   static async getTaskRecordedTimes(idTask, conn) {
+      try {
+         const rows = await conn.query(SQL_SEL_RECORDED_TIMES, [idTask]);
+         let ret = {
+            results: [],
+            totalTime: 0
+         };
+         if (rows.length > 0 ){            
+            ret.results = rows.map((itm) => {
+               let retItm = {
+                  id: itm.id_task_time_track,
+                  start_time: itm.start_time,
+                  end_time: itm.end_time,
+                  week: itm.week,
+                  recorded_time: itm.recorded_time,                  
+               }
+               if (itm.rownumber_week === 1) {
+                  retItm.total_time_week = itm.total_time_week;
+                  retItm.firstFromWeek = true;
+               }
+               return retItm;
+            });
+         }
+         return ret;
+      } finally {
+         await conn.close();
+      }
+   }
+
+   static async saveTimeRecord(timeRec, idUser, conn) {
+      let transStarted = false;
+      try {         
+         if (!timeRec.start_time) {
+            throw new ErBadRequest('No start time is informed!');
+         }
+         if (!timeRec.end_time) {
+            throw new ErBadRequest('No end time is informed!');
+         }
+         if (!(timeRec.start_time instanceof Date) || !(timeRec.end_time instanceof Date)) {
+            throw new ErBadRequest('No start time and end time must be a Date!');
+         }
+         /* just to check if the task data is ok */
+         const tsk = await TaskController.getByIdNT(timeRec.id_task, idUser, conn);
+         if (timeRec.start_time.getTime() > timeRec.end_time.getTime()) {
+            throw new ErUnprocEntity('The start time cannot be greater than the end time!');
+         }
+         const sql = timeRec.id > 0 ? SQL_UPD_TIME_TRACK : SQL_INS_TIME_TRACK;
+         let values = [];
+         if (timeRec.id > 0) {
+            values = [timeRec.start_time, timeRec.end_time, timeRec.id];
+         } else {
+            values = [tsk.id, timeRec.start_time, timeRec.end_time];
+         }
+         await conn.beginTransaction();
+         transStarted = true;
+         const updRows = await conn.query(sql, values);
+         if (timeRec.id > 0) {
+            if (!(updRows.affectedRows > 0)) {
+               throw new ErNotFound('No time record found with this id!');
+            }
+         } else {
+            timeRec.id = updRows.insertId;
+         }
+         await conn.commit();
+         return timeRec;
+      } catch (err) {
+         if (transStarted) {
+            await conn.rollback();            
+         }
+         throw err;
+      }      
+      finally {
+         await conn.close();
+      }
+   }
+
+   static async deleteTimeRecord(idTimeRec, idUser, conn) {
+      let transStarted = false;
+      try {
+         const rows = await conn.query(SQL_SEL_CHECK_TIME_RECORD, [idUser, idTimeRec]);
+         if (!(rows.length > 0)) {
+            throw ErNotFound('No time record found with this id');
+         }
+         await conn.beginTransaction();
+         transStarted = true;
+         const updRows = await conn.query(SQL_DEL_TIME_RECORD, [idTimeRec]);
+         if (!(updRows.affectedRows > 0)) {
+            throw new ErNotFound('No time record found with this id!');
+         }         
+         await conn.commit();
+         return {message: 'Successfully deleted!'};
+      } catch (err) {
+         if (transStarted) {
+            await conn.rollback();            
+         }
+         throw err;
+      }      
+      finally {
+         await conn.close();
+      }
+   }
+
+   static async deleteTask(idTask, idUser, conn) {
+      let transStarted = false;
+      try {
+         const tsk = await TaskController.getByIdNT(idTask, idUser, conn);
+         await conn.beginTransaction();
+         transStarted = true;
+         const rows = await conn.query(SQL_DEL_TASK, [tsk.id]);         
+         if (rows.affectedRows = 1) {
+            await conn.commit();
+            return {message: 'Deleted with success!'};
+         }
+         throw new ErUnprocEntity('It was unable to delete!');
+      } catch(err) {
+         if (transStarted) {
+            await conn.rollback();            
+         }
+         throw err;
+      } finally {
+         await conn.close();
+      }
+   }
    
    static startStopTrackReq(req, res, conn) {
       TaskController.startStopTrack(req.id_user, req.body.id_task, req.body.action, conn)
@@ -524,6 +850,44 @@ class TaskController {
    static getTrackedTimeReq(req, res, conn) {      
       TaskController.getTrackedTime(req.id_user, req.query, conn)
       .then((ret) => res.status(200).json(ret))
+      .catch((err) => UtilsLib.resError(err, res));
+   }
+
+   static getTaskByCodeReq(req, res, conn) {
+      TaskController.getTaskByCode(req.id_user, req.params.id, conn)
+      .then((ret) => res.status(200).send(ret))
+      .catch((err) => UtilsLib.resError(err, res));
+   }
+
+   static getTaskByIdReq(req, res, conn) {
+      TaskController.getTaskById(req.params.id, req.id_user, conn)
+      .then((ret) => res.status(200).send(ret))
+      .catch((err) => UtilsLib.resError(err, res));
+   }
+   
+   
+   static getTaskRecordedTimesReq(req, res, conn) {
+      TaskController.getTaskRecordedTimes(req.params.id, conn)
+      .then((ret) => res.status(200).send(ret))
+      .catch((err) => UtilsLib.resError(err, res));
+   }
+
+   static saveTimeRecordReq(req, res, conn) {
+      const timeRec = new TimeRecord(req.body);
+      TaskController.saveTimeRecord(timeRec, req.id_user, conn)
+      .then((ret) => res.status(200).send(ret))
+      .catch((err) => UtilsLib.resError(err, res));
+   }
+
+   static deleteTaskRecordTimeReq(req, res, conn) {
+      TaskController.deleteTimeRecord(req.params.id, req.id_user, conn)
+      .then((ret) => res.status(200).send(ret))
+      .catch((err) => UtilsLib.resError(err, res));
+   }
+
+   static deleteTaskReq(req, res, conn) {
+      TaskController.deleteTask(req.params.id, req.id_user, conn)
+      .then((ret) => res.status(200).send(ret))
       .catch((err) => UtilsLib.resError(err, res));
    }
 
