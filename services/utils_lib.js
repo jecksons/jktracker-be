@@ -53,6 +53,10 @@ class UtilsLib{
         return strRes;
     }
 
+    static getTruncDate(dtBase) {
+        return new Date(dtBase.getFullYear(), dtBase.getMonth(), dtBase.getDate());
+    }
+
     static async getUniqueString(length, conn, shouldUpper) {
         let strRes = '';
         const maxTries = 50;

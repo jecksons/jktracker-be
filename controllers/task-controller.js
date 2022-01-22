@@ -639,7 +639,7 @@ class TaskController {
       try {
          let filters = '';
          let values = [];
-         let sortOrder;
+         let sortOrder = ' ';
          if (query.id_parent > 0) {
             filters = ' id_task_parent = ? ';
             values.push(query.id_parent);
@@ -697,6 +697,7 @@ class TaskController {
                   dtFrom = lastTrkRows[0].max_date;
                }               
             }           
+            dtFrom = UtilsLib.getTruncDate(dtFrom);
          }         
          if (dtFrom.getDay() === 0) {
             dtFrom = UtilsLib.addDays(dtFrom, 6 * -1);
