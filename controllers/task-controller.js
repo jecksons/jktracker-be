@@ -20,76 +20,91 @@ const SQL_INS_TASK = `
    `;
 
 const SQL_SEL_TASK = `
-      select 
-         tsk.id_task,
-         tsk.description,
-         tsk.id_task_parent,
-         tsk.id_task_status,
-         tsk.due_date,
-         tsk.priority,
-         tsk.estimated_time,
-         tsk.unique_code,
-         case
-            when exists
-                     (
-                        select
-                           1
-                        from
-                           task chi
-                        where
-                           chi.id_task_parent = tsk.id_task
-                     ) then
-               1
-            else
-               0
-         end has_childs,
-         round(
+      with
+         tsk as
          (
             select 
-               sum(( unix_timestamp(ifnull(end_time, sysdate())) -  unix_timestamp(start_time)) / 60 / 60 / 24) total_time
+               tsk.id_task,
+               tsk.description,
+               tsk.id_task_parent,
+               tsk.id_task_status,
+               tsk.due_date,
+               tsk.priority,
+               tsk.estimated_time,
+               tsk.unique_code,
+               case
+                  when exists
+                           (
+                              select
+                                 1
+                              from
+                                 task chi
+                              where
+                                 chi.id_task_parent = tsk.id_task
+                           ) then
+                     1
+                  else
+                     0
+               end has_childs,
+               round(
+               (
+                  select 
+                     sum(( unix_timestamp(ifnull(end_time, sysdate())) -  unix_timestamp(start_time)) / 60 / 60 / 24) total_time
+                  from 
+                     task_time_track trk
+                  where 
+                     trk.id_task = tsk.id_task
+                     and trk.end_time is not null
+               ), 8) tracked_time,
+               round(
+               (
+                  select 
+                     sum(( unix_timestamp(ifnull(end_time, sysdate())) - unix_timestamp(start_time)) / 60 / 60 / 24) total_time
+                  from 
+                     task chi      
+                  join task_time_track trk on (trk.id_task = chi.id_task and trk.end_time is not null)
+                  where 
+                     chi.id_task_parent = tsk.id_task               
+               ), 8) tracked_time_childs,
+               round(
+               (
+                  select 
+                     sum(ifnull(chi.estimated_time, 0)) total_time
+                  from 
+                     task chi      
+                  where 
+                     chi.id_task_parent = tsk.id_task
+               ), 8) estimated_time_childs,
+               (
+                  select 
+                     trk.start_time
+                  from 
+                     task_time_track trk
+                  where 
+                     trk.id_task = tsk.id_task      
+                     and trk.end_time is null
+               ) start_time_tracking,
+               row_number() over(
+                                    order by 
+                                       /*sort_order*/
+                                       ifnull(tsk.priority, 9999),
+                                       tsk.id_task         
+                                 ) rn_total,
+               count(1) over() total_rows
             from 
-               task_time_track trk
-            where 
-               trk.id_task = tsk.id_task
-               and trk.end_time is not null
-         ), 8) tracked_time,
-         round(
-         (
-            select 
-               sum(( unix_timestamp(ifnull(end_time, sysdate())) - unix_timestamp(start_time)) / 60 / 60 / 24) total_time
-            from 
-               task chi      
-            join task_time_track trk on (trk.id_task = chi.id_task and trk.end_time is not null)
-            where 
-               chi.id_task_parent = tsk.id_task               
-         ), 8) tracked_time_childs,
-         round(
-         (
-            select 
-               sum(ifnull(chi.estimated_time, 0)) total_time
-            from 
-               task chi      
-            where 
-               chi.id_task_parent = tsk.id_task
-         ), 8) estimated_time_childs,
-         (
-            select 
-               trk.start_time
-            from 
-               task_time_track trk
-            where 
-               trk.id_task = tsk.id_task      
-               and trk.end_time is null
-         ) start_time_tracking
-      from 
-         task tsk
+               task tsk
+            where
+               1 = 1
+               /*filter*/
+         )
+      select
+         tsk.*
+      from
+         tsk
       where
-         1 = 1
-         /*filter*/
-      order by    
-         /*sort_order*/
-         ifnull(tsk.priority, 9999),
-         tsk.id_task
+         tsk.rn_total between ? and ?
+      order by
+         tsk.rn_total
    `;
 
 const SQL_SEL_TRACKED_TIME =  `
@@ -133,6 +148,7 @@ const SQL_SEL_TRACKED_TIME =  `
          sum(tot.hrs) over(partition by tot.dt_start_time) total_day_hrs,
          tsk.description task_description,
          par.description task_parent_description,
+         tsk.unique_code,
          row_number() over(partition by tot.dt_start_time order by tot.hrs desc) rn_day
       from
          tot
@@ -261,6 +277,14 @@ const SQL_SEL_RECORDED_TIMES = `
          trk   
    `;
 
+const SQL_GET_LAST_TRACKED_DATE = `
+      select 
+         max(trk.end_time) max_date
+      from 
+         task_time_track trk
+      join task tsk on (tsk.id_task = trk.id_task and tsk.id_user = ?)
+   `;
+
 const SQL_DEL_TASK = `
       delete from task
       where 
@@ -307,6 +331,13 @@ const SQL_DEL_TIME_RECORD = `
       where
          trk.id_task_time_track = ?
    `;
+
+const TASK_SORT_OPTIONS = [
+   'description',
+   'due_date',
+   'estimated_time',
+   'priority'
+];   
 
 class TaskController {
 
@@ -388,33 +419,21 @@ class TaskController {
          let ret = {
             previousTask: null
          };
-         if (previousTask) {
-            const tskItems = await  TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [previousTask.id], conn);
-            if (tskItems.length > 0) {
-               ret.previousTask = tskItems[0];
-            }
+         if (previousTask) {            
+            ret.previousTask = await TaskController.getByIdNT(previousTask.id, idUser, conn);            
          }               
          if (action === 'S') {
             await TaskController.startTrackingNT(idUser, idTask, conn);
-            const tskActive = await  TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [idTask], conn);
-            if (tskActive.length > 0) {
-               ret.currentTask =  tskActive[0];           
-            }            
+            ret.currentTask = await TaskController.getByIdNT(idTask, idUser, conn);            
             ret.serverDate = new Date();
          } else {
             ret.message = 'Stopped with success!';
          }         
          if (ret.currentTask?.id_task_parent > 0) {
-            const tskParent = await  TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [ret.currentTask?.id_task_parent], conn);
-            if (tskParent.length > 0) {
-               ret.currentTask.parent_data = tskParent[0];
-            }            
+            ret.currentTask.parent_data = await TaskController.getByIdNT(ret.currentTask?.id_task_parent, idUser, conn);            
          }
          if (ret.previousTask?.id_task_parent > 0) {
-            const tskParent = await TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [ret.previousTask?.id_task_parent], conn);
-            if (tskParent.length > 0) {
-               ret.previousTask.parent_data = tskParent[0];
-            }            
+            ret.previousTask.parent_data = await TaskController.getByIdNT(ret.previousTask?.id_task_parent, idUser, conn);            
          }
          await conn.commit();
          return ret;
@@ -525,23 +544,38 @@ class TaskController {
 
    static async getByIdNT(idTask, idUser, conn) {      
       const itms = await TaskController.getByFilterNT(idUser, 'tsk.id_task = ?', [idTask], conn);
-      if (itms.length > 0) {
-         return itms[0];
+      if (itms.results.length > 0) {
+         return itms.results[0];
       }
       throw new ErNotFound('No task found with this id.');
    }
 
-   static async getByFilterNT(idUser, filter, values, conn, sortOrder) {
+   static async getByFilterNT(idUser, filter, values, conn, sortOrder, offset, limit) {
       let sql = ' and tsk.id_user = ? ';
       sql += 'and ' + filter;
       let valuesSql = [idUser, ...values];      
+      const offSetRows = (parseInt(offset) >= 0 ? parseInt(offset) : 0);
+      const limitRows = ( parseInt(limit) >= 0 ?  parseInt(limit)  : 20);
       sql = SQL_SEL_TASK.replace('/*filter*/',  sql);
       if (sortOrder) {
          sql = sql.replace('/*sort_order*/', sortOrder);
       }
+      valuesSql.push(offSetRows + 1);
+      valuesSql.push(offSetRows + limitRows);
       const rows = await conn.query(sql, valuesSql);
+      let ret = {
+         metadata: {
+            total: 0,
+            count: 0,
+            offset: offSetRows,
+            limit: limitRows
+         },
+         results: []
+      };
       if (rows.length > 0) {
-         return rows.map((itm) => ({
+         ret.metadata.total = rows[0].total_rows;
+         ret.metadata.count = rows.length;
+         ret.results = rows.map((itm) => ({
             id: itm.id_task,
             description: itm.description,
             id_task_parent: itm.id_task_parent,
@@ -557,7 +591,7 @@ class TaskController {
             unique_code: itm.unique_code
          }));
       }
-      return [];
+      return ret;
    }
 
    static async saveTask(task, conn) {
@@ -575,12 +609,7 @@ class TaskController {
             task.id = rows.insertId;
          }
          await conn.commit();
-         const ret = await TaskController.getByFilterNT(task.id_user, 'id_task = ?', [task.id], conn);
-         if (ret.length > 0) {
-            return ret[0];
-         } else {
-            throw new ErInternalServer('The server was unable to retrieve the updated task.')
-         }
+         return await  TaskController.getByIdNT(task.id, task.id_user, conn);         
       } 
       catch (err) {
          if (transStarted) {
@@ -617,11 +646,20 @@ class TaskController {
          } else {
             filters = ' id_task_parent is null ';
          }
+         if (query.sort_by) {
+            if (TASK_SORT_OPTIONS.includes(query.sort_by.toLowerCase())) {
+               sortOrder = 'tsk.' + query.sort_by;
+               if (query.order_by && query.order_by.toLowerCase() === 'desc') {
+                  sortOrder += ' desc';
+               }
+               sortOrder += ', ';
+            }            
+         }
          if (query.status) {
             filters += ' and tsk.id_task_status = ?';
             values.push(query.status);            
          } else {
-            sortOrder = `
+            sortOrder += `
                case
                   when tsk.id_task_status = 'O' then 1
                   when tsk.id_task_status = 'F' then 2
@@ -630,9 +668,9 @@ class TaskController {
                end,
             `;
          }
-         const tasks = await TaskController.getByFilterNT(idUser, filters, values, conn, sortOrder);                  
+         const tasks = await TaskController.getByFilterNT(idUser, filters, values, conn, sortOrder, query.offset, query.limit);                  
          let ret = {
-            results: tasks 
+            tasks: tasks 
          };         
          ret.activeTask = await TaskController.getActiveTask(idUser, conn);         
          return ret;         
@@ -645,13 +683,21 @@ class TaskController {
 
    static async getTrackedTime(idUser, query, conn) {
       try {
-         if (!query.weekFrom) {
-            throw new ErBadRequest('weekFrom is not informed!');
-         }
-         if (!UtilsLib.strIsValidDate(query.weekFrom)) {
-            throw new ErBadRequest('weekFrom is not in a correct format (yyyy/mm/dd hh:mm:ss)!');
-         }
-         let dtFrom = new Date(query.weekFrom + ' 00:00:00');
+         let dtFrom;
+         if (query.weekFrom) {
+            if (!UtilsLib.strIsValidDate(query.weekFrom)) {
+               throw new ErBadRequest('weekFrom is not in a correct format (yyyy/mm/dd hh:mm:ss)!');
+            }
+            dtFrom = new Date(query.weekFrom + ' 00:00:00');            
+         } else {
+            const lastTrkRows = await conn.query(SQL_GET_LAST_TRACKED_DATE, [idUser]);
+            dtFrom = new Date();
+            if (lastTrkRows.length > 0) {
+               if (lastTrkRows[0].max_date) {
+                  dtFrom = lastTrkRows[0].max_date;
+               }               
+            }           
+         }         
          if (dtFrom.getDay() === 0) {
             dtFrom = UtilsLib.addDays(dtFrom, 6 * -1);
          } else {
@@ -668,7 +714,6 @@ class TaskController {
          ]);
          let ret = {
             totalTime: 0,
-	     orhet: 4,
             days: [],
             period: {
                from: dtFrom,
@@ -690,6 +735,7 @@ class TaskController {
                currDay.tasks.push({
                   id: itm.id_task,
                   hours: itm.hrs,
+                  unique_code: itm.unique_code,
                   description: itm.task_parent_description ? `${itm.task_description} (${itm.task_parent_description})`  : itm.task_description
                });
             });            
