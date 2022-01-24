@@ -464,6 +464,7 @@ class TaskController {
             const items = rows.map((itm) => ({
                id: itm.id_task,
                description: itm.description,
+               description_short: (itm.description.length > 100 ? itm.description.substring(0, 97) + '...' : itm.description),
                id_task_parent: itm.id_task_parent,
                id_task_status: itm.id_task_status,
                estimated_time: itm.estimated_time,
@@ -538,6 +539,11 @@ class TaskController {
             task.id_user,
             task.unique_code
          ];         
+      }
+      if (task.description) {
+         if (task.description.length > 500) {
+            throw new ErUnprocEntity('The description maximum length is 500 bytes!');
+         }
       }
       return {sql: sql, values: values};
    }
